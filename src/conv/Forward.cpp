@@ -14,9 +14,11 @@
 #include "conv/Forward2.h"
 #include "conv/Forward3.h"
 #include "conv/Forward4.h"
+#include "conv/ForwardTiled.h"
 #include "conv/ForwardFc.h"
 #include "conv/ForwardByInputPlane.h"
 #include "conv/ForwardIm2Col.h"
+#include "conv/ForwardTiled.h"
 #include "conv/ForwardAuto.h"
 #include "util/StatefulTimer.h"
 
@@ -54,7 +56,7 @@ STATIC Forward *Forward::instanceTest(EasyCL *cl, LayerDimensions layerDimension
     return new Forward2(cl, layerDimensions);
 }
 STATIC int Forward::getNumImplementations() {
-    return 8;
+    return 8+1; //ForwardTiled is added
 }
 STATIC bool Forward::plausiblyOptimal(int index, int batchSize, LayerDimensions dim) {
     if(index == 0) { 
@@ -87,6 +89,8 @@ STATIC Forward *Forward::instanceSpecific(int idx, EasyCL *cl, LayerDimensions l
         return new ForwardByInputPlane(cl, layerDimensions);
     } else if(idx == 7) {
         return new ForwardIm2Col(cl, layerDimensions);
+	}else if (idx == 8) {
+		return new ForwardTiled(cl, layerDimensions);
     } else {
         throw runtime_error(string("") + __FILE__ + ":" + toString(__LINE__) + " Forward::instanceSpecific: no instance defined for index " + toString(idx));
     }

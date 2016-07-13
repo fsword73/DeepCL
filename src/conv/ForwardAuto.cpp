@@ -69,7 +69,7 @@ VIRTUAL void ForwardAuto::forward(int batchSize, CLWrapper *dataWrapper, CLWrapp
                 Timer timer;
                 try {
                     candidate->forward(batchSize, dataWrapper, weightsWrapper, biasWrapper, outputWrapper);
-                    microseconds[thisIndex] = (int)timer.lap();
+                    microseconds[thisIndex] = (int)timer.elapsedMicroseconds();
                     cout << StatefulTimer::instance()->prefix << "ForwardAuto: kernel " << thisIndex << " " << microseconds[thisIndex] << "us" << endl;
                     return;
                 } catch(runtime_error &e) {

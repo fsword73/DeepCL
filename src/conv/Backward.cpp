@@ -14,6 +14,7 @@
 #include "BackwardGpuNaive.h"
 #include "BackwardGpuCached.h"
 #include "BackwardIm2Col.h"
+#include "BackwardTiled.h"
 
 #include "Backward.h"
 
@@ -52,6 +53,10 @@ STATIC Backward *Backward::instanceSpecific(int idx, EasyCL *cl, LayerDimensions
     if(idx == 3) {
         return new BackwardIm2Col(cl, layerDimensions);
     }
+	if (idx == 4) {
+		return new BackwardTiled(cl, layerDimensions);
+	}
+
     throw std::runtime_error("backproperrorsv2::isntancespecifc, index not known: " + toString(idx));
 }
 Backward::Backward(EasyCL *cl, LayerDimensions layerDimensions) :
@@ -59,7 +64,7 @@ Backward::Backward(EasyCL *cl, LayerDimensions layerDimensions) :
         dim(layerDimensions) {
 }
 STATIC int Backward::getNumImplementations() {
-    return 4;
+    return 5;
 }
 STATIC bool Backward::plausiblyOptimal(int index, int batchSize, LayerDimensions dim) {
     if(index == 0) { 

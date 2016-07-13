@@ -23,19 +23,19 @@ using namespace std;
 
 BackwardAuto::BackwardAuto(EasyCL *cl, LayerDimensions dim) :
         Backward(cl, dim),
-        milliseconds(0),
+        microseconds(0),
         valid(0),
         chosenIndex(-1),
         instances(0)
          {
     num = Backward::getNumImplementations();
-    milliseconds = new int[ num];
+    microseconds = new int[ num];
     valid = new bool[ num ];
     instances = new Backward *[ num ];
     for(int i = 0; i < num; i++) {
         instances[i] = 0;
         valid[i] = false;
-        milliseconds[i] = -1;
+        microseconds[i] = -1;
     }
     nextIndex = 0;
 }
@@ -68,8 +68,8 @@ VIRTUAL void BackwardAuto::backward(
                 Timer timer;
                 try {
                     candidate->backward(batchSize, inputDataWrapper, gradOutput, weightsWrapper, gradInput);
-                    milliseconds[thisIndex] = (int)timer.lap();
-                    cout << StatefulTimer::instance()->prefix << "BackwardAuto: kernel " << thisIndex << " " << milliseconds[thisIndex] << "ms" << endl;
+                    microseconds[thisIndex] = (int)timer.elapsedMicroseconds();
+                    cout << StatefulTimer::instance()->prefix << "BackwardAuto: kernel " << thisIndex << " " << microseconds[thisIndex] << "ms" << endl;
                     return;
                 } catch(runtime_error &e) {
                     cout << StatefulTimer::instance()->prefix << "BackwardAuto: kernel " << thisIndex << " this instance cant be used: " << e.what() << endl;
@@ -93,14 +93,14 @@ VIRTUAL void BackwardAuto::backward(
                 cout << "   backward kernel " << i << ": cannot be used" << endl;
                 continue;
             }
-            cout << "   backward kernel " << i << " time: " << milliseconds[i] << "ms" << endl;
+            cout << "   backward kernel " << i << " time: " << microseconds[i] << "ms" << endl;
             if(bestIndex == -1) {
                 bestIndex = i;
-                bestTime = milliseconds[i];
+                bestTime = microseconds[i];
                 continue;
             }
-            if(milliseconds[i] < bestTime) {
-                bestTime = milliseconds[i];
+            if(microseconds[i] < bestTime) {
+                bestTime = microseconds[i];
                 bestIndex = i;
             }
         }
