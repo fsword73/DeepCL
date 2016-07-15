@@ -3,6 +3,30 @@
 // output are organized like [imageid][filterid][row][col]
 // global group id is organized like output, ie: [imageid][outplane][HTILE_ID][VTILE_ID]
 
+
+#if 0 //REAL ARGS 
+#define BIASED 
+#define gNumInputPlanes 1 
+#define gInputPlanes 1 
+#define gInputSize 28 
+#define gInputSizeSquared 784 
+#define gNumFilters 8 
+#define gFilterSize 5 
+#define gHalfFilterSize 2 
+#define gFilterSizeSquared 25 
+#define gNumOutputPlanes 8 
+#define gOutputPlanes 150 
+#define gOutputSize 28 
+#define gOutputSizeSquared (28*28)
+#define gPadZeros 1 
+#define gMargin 2 
+#define gEven 0 
+#define gSkip 0 
+#define TILE_WIDTH 32 
+#define TILE_HEIGHT 8 
+#define VTILE_REPEAT 4 
+#define FIXED_WORKGROUP_SIZE 256
+#endif
 #if 0
 #define gOutputSize 64
 #define gOutputSizeSquared ( gOutputSize * gOutputSize)
@@ -23,7 +47,6 @@
 #define VTILE_REPEAT 4  
 #define FIXED_WORKGROUP_SIZE  256
 #endif
-
 //The bottleneck of this kernel is : VALU, Scarlar, LDS,  not buffer loading 
 
 //go: 19x19 : TILE_WIDTH = 19, TILE_HEIGHT=2 ,  TILE_REPEAT: 2 
@@ -47,6 +70,82 @@
 //Load image  into LDS once 
 //Load by Rows 
 //Load Filters by SGPR  once
+
+#if gOutputSize == 1	
+void convolve_1x1_float(
+    const int batchSize,
+    global const float *inputs, global const float *filters, 
+    global float *output, __local float* sdata, int globalId, int localId) 
+{
+    int outputImage2Id = globalId / gOutputSizeSquared;
+    int exampleId = outputImage2Id / gNumFilters;
+    int filterId = outputImage2Id % gNumFilters;
+
+    // intraimage coords
+    int localid = globalId % gOutputSizeSquared;
+    int outputRow = localid / gOutputSize;
+    int outputCol = localid % gOutputSize;
+
+    global float const*inputCube = inputs + exampleId * gNumInputPlanes * gInputSizeSquared;
+    global float const*filterCube = filters + filterId * gNumInputPlanes * gFilterSizeSquared;
+
+    float sum = 0;
+    if (exampleId < batchSize) {
+#define iterations (( gNumInputPlanes + FIXED_WORKGROUP_SIZE -1 ) / FIXED_WORKGROUP_SIZE)
+				for(int i= 0; i < iterations; i++)
+				{
+						int inputPlaneIdx = localId + i* FIXED_WORKGROUP_SIZE;
+						if(inputPlaneIdx >= gNumInputPlanes)
+							   break;
+						
+            global float const*inputPlane = inputCube + inputPlaneIdx * gInputSizeSquared;
+            global float const*filterPlane = filterCube + inputPlaneIdx * gFilterSizeSquared;
+            for (int u = -gHalfFilterSize; u <= gHalfFilterSize - gEven; u++) {
+                // trying to reduce register pressure...
+                #if gPadZeros == 1
+                    #define inputRowIdx (outputRow + u)
+                #else
+                    #define inputRowIdx (outputRow + u + gHalfFilterSize)
+                #endif
+                global float const *inputRow = inputPlane + inputRowIdx * gInputSize;
+                global float const *filterRow = filterPlane + (u+gHalfFilterSize) * gFilterSize + gHalfFilterSize;
+                bool rowOk = inputRowIdx >= 0 && inputRowIdx < gInputSize;
+                #pragma unroll
+                for (int v = -gHalfFilterSize; v <= gHalfFilterSize - gEven; v++) {
+                    #if gPadZeros == 1
+                        #define inputColIdx (outputCol + v)
+                    #else
+                        #define inputColIdx (outputCol + v + gHalfFilterSize)
+                    #endif
+                    bool process = rowOk && inputColIdx >= 0 && inputColIdx < gInputSize;
+                    if (process) {
+                            sum += inputRow[inputColIdx] * filterRow[v];
+                    }
+                }
+            }
+        }
+    }
+		
+		//Reduction
+		
+		//store into local 	 
+		sdata[localId] = sum;
+		barrier(CLK_LOCAL_MEM_FENCE);
+		for(unsigned int s = FIXED_WORKGROUP_SIZE >>1; s > 0; s >>= 1) 
+		{
+			if(localId < s) 
+			{
+				sdata[localId] += sdata[localId + s];
+			}
+			barrier(CLK_LOCAL_MEM_FENCE);
+		}
+	
+		if(localId == 0)
+		{		
+			output[globalId] = sdata[0];
+		}
+}
+#endif
 
 #if 0
 void kernel test_kernel(__global const float* filter,
@@ -72,8 +171,11 @@ void kernel convolve_tilemode_float(
 			
 		int localId = get_local_id(0);
 		int groupId = get_group_id(0);
-    
-		
+	
+#if gOutputSize == 1	
+		__local float sdata[FIXED_WORKGROUP_SIZE];
+    convolve_1x1_float(batchSize, inputs, filters, output, sdata, groupId, localId);
+#else		
 		int outputImage2Id = 	groupId /(HTILES * VTILES);
     int batchId  = outputImage2Id / gNumFilters;
     int filterId = outputImage2Id % gNumFilters;
@@ -322,6 +424,7 @@ void kernel convolve_tilemode_float(
 			 }
 			 
     }
+#endif		
 }
 
 
@@ -386,7 +489,7 @@ VIRTUAL float *ForwardCpu::forward(int batchSize, float *inputData, float *weigh
             }
         }
     }
-    return output;
+    return output;		
 }
 
 #endif

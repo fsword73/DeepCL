@@ -1,4 +1,5 @@
 
+
 // expected defines:
 //  - none
 
@@ -7,17 +8,18 @@
 // gradOutput: [n][outPlane][outRow][outCol] 128 * 32 * 19 * 19 * 4 = 6MB
 // weights: [filterId][inputPlane][filterRow][filterCol] 32 * 32 * 5 * 5 * 4 = 409KB
 
-#if 0
+#if 1
 #define  gInputSize 		64
 #define  gInputSizeSquared (gInputSize*gInputSize)
 #define  gInputPlanes  	8
 #define  gMargin 				0
-#define  gOutputSize 		64
+#define  gOutputSize 		1
 #define  gNumFilters    8 
 #define  gFilterSize    3
 #define  gHalfFilterSize ( gFilterSize >>1)
-
-
+#define  FIXED_WORKGROUP_SIZE 64
+#endif 
+#if 0
 //Following 4 defines will be depends on imageSize
 //For example: 19x19 will be 
 //      TILE_WIDTH   						19      
@@ -56,6 +58,118 @@
 
 // each time  it fetches   rows == ROWS_PER_WORKGROUP . 
 #define IMAGE_LOAD_ITERATIONS ( (HTILE_LOCAL_SIZE + ROWS_PER_WORKGROUP-1) / ROWS_PER_WORKGROUP )
+#if gOutputSize==1
+
+// small gNumFilters:  1 thread per 1 fitler row ?
+// big   gNumFilters:  1 thread per plane. 
+void kernel calcGradInput_TileMode( 
+        const int batchSize,
+        global const float *gradOutput, global float *weights, global float *gradInput) {
+    int globalId = get_group_id(0);
+		int localId  = get_local_id(0);
+
+    const int upstreamImage2dId = globalId / gInputSizeSquared;
+
+    const int intraImageOffset = globalId % gInputSizeSquared;
+    const int upstreamRow = intraImageOffset / gInputSize;
+    const int upstreamCol = intraImageOffset % gInputSize;
+
+    const int upstreamPlane = upstreamImage2dId % gInputPlanes;
+    const int n = upstreamImage2dId / gInputPlanes;
+
+    if (n >= batchSize) {
+        return;
+    }
+
+    const int minFilterRow = max(0, upstreamRow + gMargin - (gOutputSize - 1));
+    const int maxFilterRow = min(gFilterSize - 1, upstreamRow + gMargin);
+    const int minFilterCol = max(0, upstreamCol + gMargin - (gOutputSize -1));
+    const int maxFilterCol = min(gFilterSize - 1, upstreamCol + gMargin);
+
+		__local float sdata[FIXED_WORKGROUP_SIZE];
+    float sumWeightTimesOutError = 0;
+    // aggregate over [outPlane][outRow][outCol]
+#if gNumFilters < 32		
+		const int iterations = (gNumFilters *gFilterSize + FIXED_WORKGROUP_SIZE -1) /FIXED_WORKGROUP_SIZE;	
+		
+
+    for (int i = 0; i < iterations; i++) {
+
+				int index  		= localId + i * FIXED_WORKGROUP_SIZE;
+			  
+				int outPlane  =  	index/gFilterSize;
+				if(outPlane >= gNumFilters)
+					break;
+				int filterRow = index % gFilterSize;        
+				if(filterRow >= minFilterRow && filterRow <= maxFilterRow)
+				{
+            int outRow = upstreamRow + gMargin - filterRow;
+            for (int filterCol = minFilterCol; filterCol <= maxFilterCol; filterCol++) {
+                int outCol = upstreamCol + gMargin - filterCol;
+                int resultIndex = (( n * gNumFilters 
+                          + outPlane) * gOutputSize
+                          + outRow) * gOutputSize
+                          + outCol;
+                float thisError = gradOutput[resultIndex];
+                int thisWeightIndex = (( outPlane * gInputPlanes
+                                    + upstreamPlane) * gFilterSize
+                                    + filterRow) * gFilterSize
+                                    + filterCol;
+                float thisWeight = weights[thisWeightIndex];
+                float thisWeightTimesError = thisWeight * thisError;
+                sumWeightTimesOutError += thisWeightTimesError;
+            }
+        }
+    }
+#else 
+		const int iterations = (gNumFilters+ FIXED_WORKGROUP_SIZE -1) /FIXED_WORKGROUP_SIZE;
+		
+
+    for (int i = 0; i < iterations; i++) {
+
+				int outPlane = localId + i * FIXED_WORKGROUP_SIZE;
+				if(outPlane >= gNumFilters)
+					break;
+        for (int filterRow = minFilterRow; filterRow <= maxFilterRow; filterRow++) {
+            int outRow = upstreamRow + gMargin - filterRow;
+            for (int filterCol = minFilterCol; filterCol <= maxFilterCol; filterCol++) {
+                int outCol = upstreamCol + gMargin - filterCol;
+                int resultIndex = (( n * gNumFilters 
+                          + outPlane) * gOutputSize
+                          + outRow) * gOutputSize
+                          + outCol;
+                float thisError = gradOutput[resultIndex];
+                int thisWeightIndex = (( outPlane * gInputPlanes
+                                    + upstreamPlane) * gFilterSize
+                                    + filterRow) * gFilterSize
+                                    + filterCol;
+                float thisWeight = weights[thisWeightIndex];
+                float thisWeightTimesError = thisWeight * thisError;
+                sumWeightTimesOutError += thisWeightTimesError;
+            }
+        }
+    }
+#endif 		
+		
+				//store into local 	 
+		sdata[localId] = sumWeightTimesOutError;
+		barrier(CLK_LOCAL_MEM_FENCE);
+		for(unsigned int s = FIXED_WORKGROUP_SIZE >>1; s > 0; s >>= 1) 
+		{
+			if(localId < s) 
+			{
+				sdata[localId] += sdata[localId + s];
+			}
+			barrier(CLK_LOCAL_MEM_FENCE);
+		}
+	
+		if(localId == 0)
+		{		
+			gradInput[globalId] = sdata[0];
+		}		
+}
+
+#else
 
 #if 0
 void kernel test_kernel(__global const float* filter,
@@ -386,7 +500,7 @@ global const float *gradOutput, global const float *weights, global float *gradI
     }
 
 }
-
+#endif
 #if 0
 void kernel calcGradInput( 
         const int batchSize,

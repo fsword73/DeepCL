@@ -30,9 +30,9 @@ VIRTUAL void ForwardTiled::forward(int batchSize, CLWrapper *dataWrapper, CLWrap
     kernel->output(outputWrapper);
 
 	//ToDo
-	int workgroupsize;
+	int workgroupsize =64;
 	const int WAVE_SIZE = 64; 	//max of AMD: 64 and NV:  32 
-	int workgroupPerImage;
+	int workgroupPerImage =1;
 	if (dim.outputSize > 19)
 	{		
 		workgroupsize = 256;
@@ -54,6 +54,8 @@ VIRTUAL void ForwardTiled::forward(int batchSize, CLWrapper *dataWrapper, CLWrap
 	else
 	{
 		int workgroupsize = (dim.outputSizeSquared / 2 + WAVE_SIZE - 1) & (!(WAVE_SIZE - 1));
+		if (workgroupsize < 64)
+			workgroupsize = 64;
 		workgroupPerImage = 1;
 	}
 
@@ -85,17 +87,17 @@ ForwardTiled::ForwardTiled(EasyCL *cl, LayerDimensions dim) :
 	{
 		if(dim.filterSize == 3 && dim.outputSize > 32)
 		{   //16x64 tile
-			options += "-D TILE_WIDTH=16";
-			options += "-D TILE_HEIGHT=16";
-			options += "-D VTILE_REPEAT=4";
-			options += "-D FIXED_WORKGROUP_SIZE=256";
+			options += " -D TILE_WIDTH=16";
+			options += " -D TILE_HEIGHT=16";
+			options += " -D VTILE_REPEAT=4";
+			options += " -D FIXED_WORKGROUP_SIZE=256";
 		}
 		else
 		{   //32x32 tile
-			options += "-D TILE_WIDTH=32";
-			options += "-D TILE_HEIGHT=8";
-			options += "-D VTILE_REPEAT 4";
-			options += "-D FIXED_WORKGROUP_SIZE=256";
+			options += " -D TILE_WIDTH=32";
+			options += " -D TILE_HEIGHT=8";
+			options += " -D VTILE_REPEAT=4";
+			options += " -D FIXED_WORKGROUP_SIZE=256";
 		}
 
 	}
@@ -104,13 +106,15 @@ ForwardTiled::ForwardTiled(EasyCL *cl, LayerDimensions dim) :
 		const int WAVE_SIZE = 64; 
 		//max of AMD: 64 and NV:  32 
 		int FIXED_WORKGROUP_SIZE = (dim.outputSizeSquared /2 + WAVE_SIZE - 1) & (!(WAVE_SIZE - 1));
+		if (FIXED_WORKGROUP_SIZE < 64)
+			FIXED_WORKGROUP_SIZE = 64;
 		int VTILE_HEGIHT = FIXED_WORKGROUP_SIZE / dim.outputSize;
 		int VTILE_REPEAT = (dim.outputSizeSquared + FIXED_WORKGROUP_SIZE - 1) / FIXED_WORKGROUP_SIZE;
 
-		options += "-D TILE_WIDTH=" + toString(dim.outputSize);
-		options += "-D TILE_HEIGHT=" + toString(VTILE_HEGIHT);
-		options += "-D VTILE_REPEAT=" + toString(VTILE_REPEAT);
-		options += "-D FIXED_WORKGROUP_SIZE=" + toString(FIXED_WORKGROUP_SIZE);
+		options += " -D TILE_WIDTH=" + toString(dim.outputSize);
+		options += " -D TILE_HEIGHT=" + toString(VTILE_HEGIHT);
+		options += " -D VTILE_REPEAT=" + toString(VTILE_REPEAT);
+		options += " -D FIXED_WORKGROUP_SIZE=" + toString(FIXED_WORKGROUP_SIZE);
 	}
 
     // [[[cog
@@ -124,6 +128,30 @@ ForwardTiled::ForwardTiled(EasyCL *cl, LayerDimensions dim) :
     "// output are organized like [imageid][filterid][row][col]\n"
     "// global group id is organized like output, ie: [imageid][outplane][HTILE_ID][VTILE_ID]\n"
     "\n"
+    "\n"
+    "#if 0 //REAL ARGS\n"
+    "#define BIASED\n"
+    "#define gNumInputPlanes 1\n"
+    "#define gInputPlanes 1\n"
+    "#define gInputSize 28\n"
+    "#define gInputSizeSquared 784\n"
+    "#define gNumFilters 8\n"
+    "#define gFilterSize 5\n"
+    "#define gHalfFilterSize 2\n"
+    "#define gFilterSizeSquared 25\n"
+    "#define gNumOutputPlanes 8\n"
+    "#define gOutputPlanes 150\n"
+    "#define gOutputSize 28\n"
+    "#define gOutputSizeSquared (28*28)\n"
+    "#define gPadZeros 1\n"
+    "#define gMargin 2\n"
+    "#define gEven 0\n"
+    "#define gSkip 0\n"
+    "#define TILE_WIDTH 32\n"
+    "#define TILE_HEIGHT 8\n"
+    "#define VTILE_REPEAT 4\n"
+    "#define FIXED_WORKGROUP_SIZE 256\n"
+    "#endif\n"
     "#if 0\n"
     "#define gOutputSize 64\n"
     "#define gOutputSizeSquared ( gOutputSize * gOutputSize)\n"
@@ -144,7 +172,6 @@ ForwardTiled::ForwardTiled(EasyCL *cl, LayerDimensions dim) :
     "#define VTILE_REPEAT 4\n"
     "#define FIXED_WORKGROUP_SIZE  256\n"
     "#endif\n"
-    "\n"
     "//The bottleneck of this kernel is : VALU, Scarlar, LDS,  not buffer loading\n"
     "\n"
     "//go: 19x19 : TILE_WIDTH = 19, TILE_HEIGHT=2 ,  TILE_REPEAT: 2\n"
@@ -168,6 +195,82 @@ ForwardTiled::ForwardTiled(EasyCL *cl, LayerDimensions dim) :
     "//Load image  into LDS once\n"
     "//Load by Rows\n"
     "//Load Filters by SGPR  once\n"
+    "\n"
+    "#if gOutputSize == 1\n"
+    "void convolve_1x1_float(\n"
+    "    const int batchSize,\n"
+    "    global const float *inputs, global const float *filters,\n"
+    "    global float *output, __local float* sdata, int globalId, int localId)\n"
+    "{\n"
+    "    int outputImage2Id = globalId / gOutputSizeSquared;\n"
+    "    int exampleId = outputImage2Id / gNumFilters;\n"
+    "    int filterId = outputImage2Id % gNumFilters;\n"
+    "\n"
+    "    // intraimage coords\n"
+    "    int localid = globalId % gOutputSizeSquared;\n"
+    "    int outputRow = localid / gOutputSize;\n"
+    "    int outputCol = localid % gOutputSize;\n"
+    "\n"
+    "    global float const*inputCube = inputs + exampleId * gNumInputPlanes * gInputSizeSquared;\n"
+    "    global float const*filterCube = filters + filterId * gNumInputPlanes * gFilterSizeSquared;\n"
+    "\n"
+    "    float sum = 0;\n"
+    "    if (exampleId < batchSize) {\n"
+    "#define iterations (( gNumInputPlanes + FIXED_WORKGROUP_SIZE -1 ) / FIXED_WORKGROUP_SIZE)\n"
+    "				for(int i= 0; i < iterations; i++)\n"
+    "				{\n"
+    "						int inputPlaneIdx = localId + i* FIXED_WORKGROUP_SIZE;\n"
+    "						if(inputPlaneIdx >= gNumInputPlanes)\n"
+    "							   break;\n"
+    "\n"
+    "            global float const*inputPlane = inputCube + inputPlaneIdx * gInputSizeSquared;\n"
+    "            global float const*filterPlane = filterCube + inputPlaneIdx * gFilterSizeSquared;\n"
+    "            for (int u = -gHalfFilterSize; u <= gHalfFilterSize - gEven; u++) {\n"
+    "                // trying to reduce register pressure...\n"
+    "                #if gPadZeros == 1\n"
+    "                    #define inputRowIdx (outputRow + u)\n"
+    "                #else\n"
+    "                    #define inputRowIdx (outputRow + u + gHalfFilterSize)\n"
+    "                #endif\n"
+    "                global float const *inputRow = inputPlane + inputRowIdx * gInputSize;\n"
+    "                global float const *filterRow = filterPlane + (u+gHalfFilterSize) * gFilterSize + gHalfFilterSize;\n"
+    "                bool rowOk = inputRowIdx >= 0 && inputRowIdx < gInputSize;\n"
+    "                #pragma unroll\n"
+    "                for (int v = -gHalfFilterSize; v <= gHalfFilterSize - gEven; v++) {\n"
+    "                    #if gPadZeros == 1\n"
+    "                        #define inputColIdx (outputCol + v)\n"
+    "                    #else\n"
+    "                        #define inputColIdx (outputCol + v + gHalfFilterSize)\n"
+    "                    #endif\n"
+    "                    bool process = rowOk && inputColIdx >= 0 && inputColIdx < gInputSize;\n"
+    "                    if (process) {\n"
+    "                            sum += inputRow[inputColIdx] * filterRow[v];\n"
+    "                    }\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
+    "    }\n"
+    "\n"
+    "		//Reduction\n"
+    "\n"
+    "		//store into local\n"
+    "		sdata[localId] = sum;\n"
+    "		barrier(CLK_LOCAL_MEM_FENCE);\n"
+    "		for(unsigned int s = FIXED_WORKGROUP_SIZE >>1; s > 0; s >>= 1)\n"
+    "		{\n"
+    "			if(localId < s)\n"
+    "			{\n"
+    "				sdata[localId] += sdata[localId + s];\n"
+    "			}\n"
+    "			barrier(CLK_LOCAL_MEM_FENCE);\n"
+    "		}\n"
+    "\n"
+    "		if(localId == 0)\n"
+    "		{\n"
+    "			output[globalId] = sdata[0];\n"
+    "		}\n"
+    "}\n"
+    "#endif\n"
     "\n"
     "#if 0\n"
     "void kernel test_kernel(__global const float* filter,\n"
@@ -194,7 +297,10 @@ ForwardTiled::ForwardTiled(EasyCL *cl, LayerDimensions dim) :
     "		int localId = get_local_id(0);\n"
     "		int groupId = get_group_id(0);\n"
     "\n"
-    "\n"
+    "#if gOutputSize == 1\n"
+    "		__local float sdata[FIXED_WORKGROUP_SIZE];\n"
+    "    convolve_1x1_float(batchSize, inputs, filters, output, sdata, groupId, localId);\n"
+    "#else\n"
     "		int outputImage2Id = 	groupId /(HTILES * VTILES);\n"
     "    int batchId  = outputImage2Id / gNumFilters;\n"
     "    int filterId = outputImage2Id % gNumFilters;\n"
@@ -443,6 +549,7 @@ ForwardTiled::ForwardTiled(EasyCL *cl, LayerDimensions dim) :
     "			 }\n"
     "\n"
     "    }\n"
+    "#endif\n"
     "}\n"
     "\n"
     "\n"
