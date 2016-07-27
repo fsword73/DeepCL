@@ -17,12 +17,14 @@ Backward.cpp
 BackwardCpu.cpp
 BackwardGpuCached.cpp
 BackwardGpuNaive.cpp
+BackwardTiled.cpp
 ConvolutionalLayer.cpp
 ConvolutionalMaker.cpp
 Forward1.cpp
 Forward2.cpp
 Forward3.cpp
 Forward4.cpp
+ForwardTiled.cpp
 ForwardAuto.cpp
 ForwardByInputPlane.cpp
 Forward.cpp
