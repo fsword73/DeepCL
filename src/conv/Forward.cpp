@@ -56,13 +56,13 @@ STATIC Forward *Forward::instanceTest(EasyCL *cl, LayerDimensions layerDimension
     return new Forward2(cl, layerDimensions);
 }
 STATIC int Forward::getNumImplementations() {
-    return 8+1; //ForwardTiled is added
+    return 9; //ForwardTiled is added
 }
 STATIC bool Forward::plausiblyOptimal(int index, int batchSize, LayerDimensions dim) {
     if(index == 0) { 
         return false;
     }
-    if(index > 7) {
+    if(index > 8) {
         return false;
     }
     return true;
@@ -89,9 +89,11 @@ STATIC Forward *Forward::instanceSpecific(int idx, EasyCL *cl, LayerDimensions l
         return new ForwardByInputPlane(cl, layerDimensions);
     } else if(idx == 7) {
         return new ForwardIm2Col(cl, layerDimensions);
-	}else if (idx == 8) {
+	}
+	else if (idx == 8) {
 		return new ForwardTiled(cl, layerDimensions);
-    } else {
+    }
+	else {
         throw runtime_error(string("") + __FILE__ + ":" + toString(__LINE__) + " Forward::instanceSpecific: no instance defined for index " + toString(idx));
     }
 }

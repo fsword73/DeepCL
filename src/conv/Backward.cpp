@@ -70,7 +70,7 @@ STATIC bool Backward::plausiblyOptimal(int index, int batchSize, LayerDimensions
     if(index == 0) { 
         return false;
     }
-    if(index >= 4) {
+    if(index > 4) {
         return false;
     }
     return true;

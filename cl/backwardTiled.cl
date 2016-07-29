@@ -8,12 +8,12 @@
 // gradOutput: [n][outPlane][outRow][outCol] 128 * 32 * 19 * 19 * 4 = 6MB
 // weights: [filterId][inputPlane][filterRow][filterCol] 32 * 32 * 5 * 5 * 4 = 409KB
 
-#if 1
+#if 0
 #define  gInputSize 		64
 #define  gInputSizeSquared (gInputSize*gInputSize)
 #define  gInputPlanes  	8
 #define  gMargin 				0
-#define  gOutputSize 		1
+#define  gOutputSize 		64
 #define  gNumFilters    8 
 #define  gFilterSize    3
 #define  gHalfFilterSize ( gFilterSize >>1)
@@ -48,7 +48,7 @@
 #define VTILES ((gInputSize + TILE_HEIGHT-1) / (TILE_HEIGHT * VTILE_REPEAT)) 
 
 //Shared Memory with Odd Stride to avoid Bank Conflicts
-#define HTILE_LOCAL_SIZE ( ( gFilterSize + TILE_WIDTH) | 0x1)
+#define HTILE_LOCAL_SIZE ( (gFilterSize-1 + TILE_WIDTH) )
 #define VTILE_LOCAL_SIZE ( gFilterSize -1 + TILE_HEIGHT * VTILE_REPEAT)
 
 
@@ -58,118 +58,7 @@
 
 // each time  it fetches   rows == ROWS_PER_WORKGROUP . 
 #define IMAGE_LOAD_ITERATIONS ( (HTILE_LOCAL_SIZE + ROWS_PER_WORKGROUP-1) / ROWS_PER_WORKGROUP )
-#if gOutputSize==1
 
-// small gNumFilters:  1 thread per 1 fitler row ?
-// big   gNumFilters:  1 thread per plane. 
-void kernel calcGradInput_TileMode( 
-        const int batchSize,
-        global const float *gradOutput, global float *weights, global float *gradInput) {
-    int globalId = get_group_id(0);
-		int localId  = get_local_id(0);
-
-    const int upstreamImage2dId = globalId / gInputSizeSquared;
-
-    const int intraImageOffset = globalId % gInputSizeSquared;
-    const int upstreamRow = intraImageOffset / gInputSize;
-    const int upstreamCol = intraImageOffset % gInputSize;
-
-    const int upstreamPlane = upstreamImage2dId % gInputPlanes;
-    const int n = upstreamImage2dId / gInputPlanes;
-
-    if (n >= batchSize) {
-        return;
-    }
-
-    const int minFilterRow = max(0, upstreamRow + gMargin - (gOutputSize - 1));
-    const int maxFilterRow = min(gFilterSize - 1, upstreamRow + gMargin);
-    const int minFilterCol = max(0, upstreamCol + gMargin - (gOutputSize -1));
-    const int maxFilterCol = min(gFilterSize - 1, upstreamCol + gMargin);
-
-		__local float sdata[FIXED_WORKGROUP_SIZE];
-    float sumWeightTimesOutError = 0;
-    // aggregate over [outPlane][outRow][outCol]
-#if gNumFilters < 32		
-		const int iterations = (gNumFilters *gFilterSize + FIXED_WORKGROUP_SIZE -1) /FIXED_WORKGROUP_SIZE;	
-		
-
-    for (int i = 0; i < iterations; i++) {
-
-				int index  		= localId + i * FIXED_WORKGROUP_SIZE;
-			  
-				int outPlane  =  	index/gFilterSize;
-				if(outPlane >= gNumFilters)
-					break;
-				int filterRow = index % gFilterSize;        
-				if(filterRow >= minFilterRow && filterRow <= maxFilterRow)
-				{
-            int outRow = upstreamRow + gMargin - filterRow;
-            for (int filterCol = minFilterCol; filterCol <= maxFilterCol; filterCol++) {
-                int outCol = upstreamCol + gMargin - filterCol;
-                int resultIndex = (( n * gNumFilters 
-                          + outPlane) * gOutputSize
-                          + outRow) * gOutputSize
-                          + outCol;
-                float thisError = gradOutput[resultIndex];
-                int thisWeightIndex = (( outPlane * gInputPlanes
-                                    + upstreamPlane) * gFilterSize
-                                    + filterRow) * gFilterSize
-                                    + filterCol;
-                float thisWeight = weights[thisWeightIndex];
-                float thisWeightTimesError = thisWeight * thisError;
-                sumWeightTimesOutError += thisWeightTimesError;
-            }
-        }
-    }
-#else 
-		const int iterations = (gNumFilters+ FIXED_WORKGROUP_SIZE -1) /FIXED_WORKGROUP_SIZE;
-		
-
-    for (int i = 0; i < iterations; i++) {
-
-				int outPlane = localId + i * FIXED_WORKGROUP_SIZE;
-				if(outPlane >= gNumFilters)
-					break;
-        for (int filterRow = minFilterRow; filterRow <= maxFilterRow; filterRow++) {
-            int outRow = upstreamRow + gMargin - filterRow;
-            for (int filterCol = minFilterCol; filterCol <= maxFilterCol; filterCol++) {
-                int outCol = upstreamCol + gMargin - filterCol;
-                int resultIndex = (( n * gNumFilters 
-                          + outPlane) * gOutputSize
-                          + outRow) * gOutputSize
-                          + outCol;
-                float thisError = gradOutput[resultIndex];
-                int thisWeightIndex = (( outPlane * gInputPlanes
-                                    + upstreamPlane) * gFilterSize
-                                    + filterRow) * gFilterSize
-                                    + filterCol;
-                float thisWeight = weights[thisWeightIndex];
-                float thisWeightTimesError = thisWeight * thisError;
-                sumWeightTimesOutError += thisWeightTimesError;
-            }
-        }
-    }
-#endif 		
-		
-				//store into local 	 
-		sdata[localId] = sumWeightTimesOutError;
-		barrier(CLK_LOCAL_MEM_FENCE);
-		for(unsigned int s = FIXED_WORKGROUP_SIZE >>1; s > 0; s >>= 1) 
-		{
-			if(localId < s) 
-			{
-				sdata[localId] += sdata[localId + s];
-			}
-			barrier(CLK_LOCAL_MEM_FENCE);
-		}
-	
-		if(localId == 0)
-		{		
-			gradInput[globalId] = sdata[0];
-		}		
-}
-
-#else
 
 #if 0
 void kernel test_kernel(__global const float* filter,
@@ -207,20 +96,21 @@ global const float *gradOutput, global const float *weights, global float *gradI
 		__local float __gradOutput[HTILE_LOCAL_SIZE * VTILE_LOCAL_SIZE];
 	
 	
-	  int weightPlaneOffset = upstreamPlane * gInputPlanes*gFilterSize*gFilterSize;
+	
+	  int weightPlaneOffset = upstreamPlane * gFilterSize*gFilterSize;
 		int outputImageOffset = n * gNumFilters *  (gOutputSize *  gOutputSize);
 
     //Step1: calculuating output
 
 		
 		const int tile_BL_Y = ((groupId % (HTILES * VTILES)) / HTILES) * (VTILE_REPEAT * TILE_HEIGHT);
-		const int  tile_BL_X = ((groupId % (HTILES * VTILES)) % HTILES) * TILE_WIDTH;
+		const int tile_BL_X = ((groupId % (HTILES * VTILES)) % HTILES) * TILE_WIDTH;
 
 		int localRow  = localId / TILE_WIDTH ;
 		int localCol  = localId % TILE_WIDTH ;
 		
-		int upstreamRow = localRow  + tile_BL_Y + gMargin; 
-		int upstreamCol	= localCol  + tile_BL_X + gMargin;	
+		int upstreamRow = localRow  + tile_BL_Y ; 
+		int upstreamCol	= localCol  + tile_BL_X ;	
 			
 		bool bValid =  upstreamRow < gInputSize && upstreamCol < gInputSize && localId < MAX_VALID_ID;
 		
@@ -229,12 +119,18 @@ global const float *gradOutput, global const float *weights, global float *gradI
 		bool bValid3 =  (upstreamRow + TILE_HEIGHT*2) < gInputSize && upstreamCol < gInputSize && localId < MAX_VALID_ID;
 		bool bValid4 =  (upstreamRow + TILE_HEIGHT*3) < gInputSize && upstreamCol < gInputSize && localId < MAX_VALID_ID;
 		
+		upstreamRow += gMargin; 
+		upstreamCol	+= gMargin;	
+		
+		//  Filter   [  0,0   0,1   0,2]  Pixel  [   0,0    0,-1    0,-2] 
+		//           [  1,0   1,1   1,2]         [  -1,0   -1,-1   -1,-2] 
+		//           [  2,0   2,1   2,2]         [  -2,0   -2,-1   -2,-2] 
 		
 		
 		//Step2: loading_offset;
     int local_x, local_y;
-		bool bImageLoad = false;
-		bool bImageLoad2 = false;
+		bool bImageLoad = false;   //possible to Load 
+		bool bImageValidX = false;  //Really have to Load
 		int image_x, image_y;
 		if( localId < (ROWS_PER_WORKGROUP * HTILE_LOCAL_SIZE))
 		{
@@ -242,13 +138,15 @@ global const float *gradOutput, global const float *weights, global float *gradI
 				local_x	= localId % HTILE_LOCAL_SIZE;
 			  local_y = localId / HTILE_LOCAL_SIZE;
 			  
-			  
-			  image_x = local_x + tile_BL_X - (gFilterSize-1) + gMargin;
-			  image_y = local_y + tile_BL_Y - (gFilterSize-1) + gMargin;
-				if( image_x >= 0 && image_x < gInputSize)
+			  //shift left to (gFilterSize-1)
+			  image_x = local_x + tile_BL_X - (gFilterSize-1) ;
+			  image_y = local_y + tile_BL_Y - (gFilterSize-1) ;
+				if( image_x >= 0 && image_x < gOutputSize)
 				{
-						bImageLoad2 = true;
+						bImageValidX = true;
 				}
+				image_x +=  gMargin;
+				image_y +=  gMargin;				
 		}	
 
 	  
@@ -256,43 +154,11 @@ global const float *gradOutput, global const float *weights, global float *gradI
 		int forceloop = min(gNumFilters, gNumFilters*batchSize);
 		
     for (int outPlane = 0; outPlane < forceloop; outPlane++) {
-			  //only bImageLoad == true will load images
-			  //For exmaple 5x5 filters, 16x16  tile
-		    //  1st load 12 Rows   == 256 threads == 256/ (16 + 5 -1 )  = 12:  
-				//	 					==> 240 threds load iamge ,   last 16 threads do not load 
-	      //  2nd load 4  rows   == 16- 12 = rows  
-				//            ==> only 1st 64 threads load images  
-        //  
+
 			  
 			   if(bImageLoad)
 				 {
-						//1st Load is a must 
-					 {
-								int localOffset =	local_y * HTILE_LOCAL_SIZE + local_x;
-								float value;				
-								int row = 0;
-								bool bProcess = false;
-
-								row = image_y; 						
-								
-								
-								
-								bProcess = row >= 0 && row < gInputSize && bImageLoad2 ;
-								
-								int offset =  outputImageOffset + 
-																outPlane * gOutputSize * gOutputSize +
-																row * gOutputSize + 
-																image_x;
-								
-								 value =  gradOutput[offset];
-								 if(!bProcess){
-										value = 0;
-									}
-								
-								__gradOutput[localOffset] = value;
-						}			
-						
-						for(int i = 1; i < IMAGE_LOAD_ITERATIONS; i++)
+						for(int i = 0; i < IMAGE_LOAD_ITERATIONS; i++)
 						{
 							int localOffset =	(local_y + i * ROWS_PER_WORKGROUP)  * HTILE_LOCAL_SIZE + local_x;
 							
@@ -303,11 +169,9 @@ global const float *gradOutput, global const float *weights, global float *gradI
 									int row = 0;
 									bool bProcess = false;
 
-									row = image_y + i * ROWS_PER_WORKGROUP; 						
+									row = image_y + i * ROWS_PER_WORKGROUP; 	
 									
-									
-									
-									bProcess = row >= 0 && row < gInputSize && bImageLoad2 ;
+									bProcess = row >= 0 && row < gOutputSize && bImageValidX ;
 									
 									int offset =  outputImageOffset + 
 																	outPlane * gOutputSize * gOutputSize +
@@ -331,7 +195,12 @@ global const float *gradOutput, global const float *weights, global float *gradI
 					//No negative offset mode, it is slow code 					
 					
 					//LLVM with Pointers to produce less address
-					__global const float *f = &weights[weightPlaneOffset + outPlane * gFilterSize *gFilterSize];
+					//int thisWeightIndex = (( outPlane * gInputPlanes
+					// 											+ upstreamPlane) * gFilterSize
+					//											+ filterRow) * gFilterSize
+					//            					+ filterCol;
+
+					__global const float *f = &weights[weightPlaneOffset + outPlane * gInputPlanes * gFilterSize *gFilterSize];
 					for(int i=0; i < gFilterSize; i++)
 					{
 						for(int j=0; j < gFilterSize; j++)					
@@ -404,8 +273,8 @@ global const float *gradOutput, global const float *weights, global float *gradI
 									int resultIndex = outRow * HTILE_LOCAL_SIZE + outCol;
 
 									float thisError = __gradOutput[resultIndex];
-									int thisWeightIndex = weightPlaneOffset + 
-																				outPlane * gFilterSize *gFilterSize
+									int thisWeightIndex = outPlane * gInputPlanes* gFilterSize *gFilterSize 
+																				+ weightPlaneOffset + 																				
 																				+ i * gFilterSize
 																				+ j;
 									float thisWeight = weights[thisWeightIndex];
@@ -424,8 +293,8 @@ global const float *gradOutput, global const float *weights, global float *gradI
 										int resultIndex = outRow * HTILE_LOCAL_SIZE + outCol;
 
 										float thisError = __gradOutput[resultIndex];
-									int thisWeightIndex = weightPlaneOffset + 
-																				outPlane * gFilterSize *gFilterSize
+									int thisWeightIndex = outPlane * gInputPlanes* gFilterSize *gFilterSize 
+																				+ weightPlaneOffset + 																				
 																				+ i * gFilterSize
 																				+ j;
 										float thisWeight = weights[thisWeightIndex];
@@ -444,8 +313,8 @@ global const float *gradOutput, global const float *weights, global float *gradI
 										int resultIndex = outRow * HTILE_LOCAL_SIZE + outCol;
 
 										float thisError = __gradOutput[resultIndex];
-									int thisWeightIndex = weightPlaneOffset + 
-																				outPlane * gFilterSize *gFilterSize
+									int thisWeightIndex = outPlane * gInputPlanes* gFilterSize *gFilterSize 
+																				+ weightPlaneOffset + 																				
 																				+ i * gFilterSize
 																				+ j;
 										float thisWeight = weights[thisWeightIndex];
@@ -464,8 +333,8 @@ global const float *gradOutput, global const float *weights, global float *gradI
 										int resultIndex = outRow * HTILE_LOCAL_SIZE + outCol;
 
 										float thisError = __gradOutput[resultIndex];
-										int thisWeightIndex = weightPlaneOffset + 
-																				outPlane * gFilterSize *gFilterSize
+									int thisWeightIndex = outPlane * gInputPlanes* gFilterSize *gFilterSize 
+																				+ weightPlaneOffset + 																				
 																				+ i * gFilterSize
 																				+ j;
 										float thisWeight = weights[thisWeightIndex];
@@ -500,7 +369,9 @@ global const float *gradOutput, global const float *weights, global float *gradI
     }
 
 }
-#endif
+
+
+
 #if 0
 void kernel calcGradInput( 
         const int batchSize,

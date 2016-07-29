@@ -29,34 +29,34 @@ VIRTUAL void BackwardTiled::backward(int batchSize,
 	int workgroupsize = 64;
 	const int WAVE_SIZE = 64; 	//max of AMD: 64 and NV:  32 
 	int workgroupPerImage =1;
-	if (dim.outputSize > 19)
+	if (dim.inputSize > 19)
 	{
 		workgroupsize = 256;
-		if (dim.filterSize == 3 && dim.outputSize > 32)
+		if (dim.filterSize == 3 && dim.inputSize > 32)
 		{
 			//16x64 tile
 			const int HSIZE = 16;
 			const int VSIZE = 64;
-			workgroupPerImage = ((dim.outputSize + HSIZE - 1) / HSIZE) * ((dim.outputSize + VSIZE - 1) / VSIZE);
+			workgroupPerImage = ((dim.inputSize + HSIZE - 1) / HSIZE) * ((dim.inputSize + VSIZE - 1) / VSIZE);
 		}
 		else
 		{
 			//32x32 tile
 			const int HSIZE = 32;
 			const int VSIZE = 32;
-			workgroupPerImage = ((dim.outputSize + HSIZE - 1) / HSIZE) * ((dim.outputSize + VSIZE - 1) / VSIZE);
+			workgroupPerImage = ((dim.inputSize + HSIZE - 1) / HSIZE) * ((dim.inputSize + VSIZE - 1) / VSIZE);
 		}
 	}
 	else
 	{
-		int workgroupsize = (dim.outputSizeSquared / 2 + WAVE_SIZE - 1) & (!(WAVE_SIZE - 1));
+		int workgroupsize = (dim.inputSizeSquared / 2 + WAVE_SIZE - 1) & (!(WAVE_SIZE - 1));
 		if (workgroupsize < WAVE_SIZE)
 			workgroupsize = WAVE_SIZE;
 		workgroupPerImage = 1;
 	}
 
 
-	int globalSize = batchSize * dim.numFilters * workgroupPerImage * workgroupsize;
+	int globalSize = batchSize * dim.numInputPlanes * workgroupPerImage * workgroupsize;
     kernel->run_1d(globalSize, workgroupsize);
 
     cl->finish();
@@ -75,10 +75,10 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     std::string options = dim.buildOptionsString();
     options += ""; // " -D " + upstreamFn->getDefineName();
 
-				   //ToDo
-	if (dim.outputSize > 19)
+	//ToDo
+	if (dim.inputSize > 19)
 	{
-		if (dim.filterSize == 3 && dim.outputSize > 32)
+		if (dim.filterSize == 3 && dim.inputSize > 32)
 		{   //16x64 tile
 			options += " -D TILE_WIDTH=16";
 			options += " -D TILE_HEIGHT=16";
@@ -86,7 +86,7 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
 			options += " -D FIXED_WORKGROUP_SIZE=256";
 		}
 		else
-		{   //32x32 tile
+		{   //32x32 tile: LDS bank = 32
 			options += " -D TILE_WIDTH=32";
 			options += " -D TILE_HEIGHT=8";
 			options += " -D VTILE_REPEAT=4";
@@ -98,13 +98,13 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
 	{
 		const int WAVE_SIZE = 64;
 		//max of AMD: 64 and NV:  32 
-		int FIXED_WORKGROUP_SIZE = (dim.outputSizeSquared / 2 + WAVE_SIZE - 1) & (!(WAVE_SIZE - 1));
+		int FIXED_WORKGROUP_SIZE = (dim.inputSizeSquared / 2 + WAVE_SIZE - 1) & (!(WAVE_SIZE - 1));
 		if(FIXED_WORKGROUP_SIZE < 64)
 			FIXED_WORKGROUP_SIZE = 64;
-		int VTILE_HEGIHT = FIXED_WORKGROUP_SIZE / dim.outputSize;
-		int VTILE_REPEAT = (dim.outputSizeSquared + FIXED_WORKGROUP_SIZE - 1) / FIXED_WORKGROUP_SIZE;
+		int VTILE_HEGIHT = FIXED_WORKGROUP_SIZE / dim.inputSize;
+		int VTILE_REPEAT = (dim.inputSizeSquared + FIXED_WORKGROUP_SIZE - 1) / FIXED_WORKGROUP_SIZE;
 
-		options += " -D TILE_WIDTH=" + toString(dim.outputSize);
+		options += " -D TILE_WIDTH=" + toString(dim.inputSize);
 		options += " -D TILE_HEIGHT=" + toString(VTILE_HEGIHT);
 		options += " -D VTILE_REPEAT=" + toString(VTILE_REPEAT);
 		options += " -D FIXED_WORKGROUP_SIZE=" + toString(FIXED_WORKGROUP_SIZE);
@@ -126,12 +126,12 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "// gradOutput: [n][outPlane][outRow][outCol] 128 * 32 * 19 * 19 * 4 = 6MB\n"
     "// weights: [filterId][inputPlane][filterRow][filterCol] 32 * 32 * 5 * 5 * 4 = 409KB\n"
     "\n"
-    "#if 1\n"
+    "#if 0\n"
     "#define  gInputSize 		64\n"
     "#define  gInputSizeSquared (gInputSize*gInputSize)\n"
     "#define  gInputPlanes  	8\n"
     "#define  gMargin 				0\n"
-    "#define  gOutputSize 		1\n"
+    "#define  gOutputSize 		64\n"
     "#define  gNumFilters    8\n"
     "#define  gFilterSize    3\n"
     "#define  gHalfFilterSize ( gFilterSize >>1)\n"
@@ -166,7 +166,7 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "#define VTILES ((gInputSize + TILE_HEIGHT-1) / (TILE_HEIGHT * VTILE_REPEAT))\n"
     "\n"
     "//Shared Memory with Odd Stride to avoid Bank Conflicts\n"
-    "#define HTILE_LOCAL_SIZE ( ( gFilterSize + TILE_WIDTH) | 0x1)\n"
+    "#define HTILE_LOCAL_SIZE ( (gFilterSize-1 + TILE_WIDTH) )\n"
     "#define VTILE_LOCAL_SIZE ( gFilterSize -1 + TILE_HEIGHT * VTILE_REPEAT)\n"
     "\n"
     "\n"
@@ -176,118 +176,7 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "\n"
     "// each time  it fetches   rows == ROWS_PER_WORKGROUP .\n"
     "#define IMAGE_LOAD_ITERATIONS ( (HTILE_LOCAL_SIZE + ROWS_PER_WORKGROUP-1) / ROWS_PER_WORKGROUP )\n"
-    "#if gOutputSize==1\n"
     "\n"
-    "// small gNumFilters:  1 thread per 1 fitler row ?\n"
-    "// big   gNumFilters:  1 thread per plane.\n"
-    "void kernel calcGradInput_TileMode(\n"
-    "        const int batchSize,\n"
-    "        global const float *gradOutput, global float *weights, global float *gradInput) {\n"
-    "    int globalId = get_group_id(0);\n"
-    "		int localId  = get_local_id(0);\n"
-    "\n"
-    "    const int upstreamImage2dId = globalId / gInputSizeSquared;\n"
-    "\n"
-    "    const int intraImageOffset = globalId % gInputSizeSquared;\n"
-    "    const int upstreamRow = intraImageOffset / gInputSize;\n"
-    "    const int upstreamCol = intraImageOffset % gInputSize;\n"
-    "\n"
-    "    const int upstreamPlane = upstreamImage2dId % gInputPlanes;\n"
-    "    const int n = upstreamImage2dId / gInputPlanes;\n"
-    "\n"
-    "    if (n >= batchSize) {\n"
-    "        return;\n"
-    "    }\n"
-    "\n"
-    "    const int minFilterRow = max(0, upstreamRow + gMargin - (gOutputSize - 1));\n"
-    "    const int maxFilterRow = min(gFilterSize - 1, upstreamRow + gMargin);\n"
-    "    const int minFilterCol = max(0, upstreamCol + gMargin - (gOutputSize -1));\n"
-    "    const int maxFilterCol = min(gFilterSize - 1, upstreamCol + gMargin);\n"
-    "\n"
-    "		__local float sdata[FIXED_WORKGROUP_SIZE];\n"
-    "    float sumWeightTimesOutError = 0;\n"
-    "    // aggregate over [outPlane][outRow][outCol]\n"
-    "#if gNumFilters < 32\n"
-    "		const int iterations = (gNumFilters *gFilterSize + FIXED_WORKGROUP_SIZE -1) /FIXED_WORKGROUP_SIZE;\n"
-    "\n"
-    "\n"
-    "    for (int i = 0; i < iterations; i++) {\n"
-    "\n"
-    "				int index  		= localId + i * FIXED_WORKGROUP_SIZE;\n"
-    "\n"
-    "				int outPlane  =  	index/gFilterSize;\n"
-    "				if(outPlane >= gNumFilters)\n"
-    "					break;\n"
-    "				int filterRow = index % gFilterSize;\n"
-    "				if(filterRow >= minFilterRow && filterRow <= maxFilterRow)\n"
-    "				{\n"
-    "            int outRow = upstreamRow + gMargin - filterRow;\n"
-    "            for (int filterCol = minFilterCol; filterCol <= maxFilterCol; filterCol++) {\n"
-    "                int outCol = upstreamCol + gMargin - filterCol;\n"
-    "                int resultIndex = (( n * gNumFilters\n"
-    "                          + outPlane) * gOutputSize\n"
-    "                          + outRow) * gOutputSize\n"
-    "                          + outCol;\n"
-    "                float thisError = gradOutput[resultIndex];\n"
-    "                int thisWeightIndex = (( outPlane * gInputPlanes\n"
-    "                                    + upstreamPlane) * gFilterSize\n"
-    "                                    + filterRow) * gFilterSize\n"
-    "                                    + filterCol;\n"
-    "                float thisWeight = weights[thisWeightIndex];\n"
-    "                float thisWeightTimesError = thisWeight * thisError;\n"
-    "                sumWeightTimesOutError += thisWeightTimesError;\n"
-    "            }\n"
-    "        }\n"
-    "    }\n"
-    "#else\n"
-    "		const int iterations = (gNumFilters+ FIXED_WORKGROUP_SIZE -1) /FIXED_WORKGROUP_SIZE;\n"
-    "\n"
-    "\n"
-    "    for (int i = 0; i < iterations; i++) {\n"
-    "\n"
-    "				int outPlane = localId + i * FIXED_WORKGROUP_SIZE;\n"
-    "				if(outPlane >= gNumFilters)\n"
-    "					break;\n"
-    "        for (int filterRow = minFilterRow; filterRow <= maxFilterRow; filterRow++) {\n"
-    "            int outRow = upstreamRow + gMargin - filterRow;\n"
-    "            for (int filterCol = minFilterCol; filterCol <= maxFilterCol; filterCol++) {\n"
-    "                int outCol = upstreamCol + gMargin - filterCol;\n"
-    "                int resultIndex = (( n * gNumFilters\n"
-    "                          + outPlane) * gOutputSize\n"
-    "                          + outRow) * gOutputSize\n"
-    "                          + outCol;\n"
-    "                float thisError = gradOutput[resultIndex];\n"
-    "                int thisWeightIndex = (( outPlane * gInputPlanes\n"
-    "                                    + upstreamPlane) * gFilterSize\n"
-    "                                    + filterRow) * gFilterSize\n"
-    "                                    + filterCol;\n"
-    "                float thisWeight = weights[thisWeightIndex];\n"
-    "                float thisWeightTimesError = thisWeight * thisError;\n"
-    "                sumWeightTimesOutError += thisWeightTimesError;\n"
-    "            }\n"
-    "        }\n"
-    "    }\n"
-    "#endif\n"
-    "\n"
-    "				//store into local\n"
-    "		sdata[localId] = sumWeightTimesOutError;\n"
-    "		barrier(CLK_LOCAL_MEM_FENCE);\n"
-    "		for(unsigned int s = FIXED_WORKGROUP_SIZE >>1; s > 0; s >>= 1)\n"
-    "		{\n"
-    "			if(localId < s)\n"
-    "			{\n"
-    "				sdata[localId] += sdata[localId + s];\n"
-    "			}\n"
-    "			barrier(CLK_LOCAL_MEM_FENCE);\n"
-    "		}\n"
-    "\n"
-    "		if(localId == 0)\n"
-    "		{\n"
-    "			gradInput[globalId] = sdata[0];\n"
-    "		}\n"
-    "}\n"
-    "\n"
-    "#else\n"
     "\n"
     "#if 0\n"
     "void kernel test_kernel(__global const float* filter,\n"
@@ -325,20 +214,21 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "		__local float __gradOutput[HTILE_LOCAL_SIZE * VTILE_LOCAL_SIZE];\n"
     "\n"
     "\n"
-    "	  int weightPlaneOffset = upstreamPlane * gInputPlanes*gFilterSize*gFilterSize;\n"
+    "\n"
+    "	  int weightPlaneOffset = upstreamPlane * gFilterSize*gFilterSize;\n"
     "		int outputImageOffset = n * gNumFilters *  (gOutputSize *  gOutputSize);\n"
     "\n"
     "    //Step1: calculuating output\n"
     "\n"
     "\n"
     "		const int tile_BL_Y = ((groupId % (HTILES * VTILES)) / HTILES) * (VTILE_REPEAT * TILE_HEIGHT);\n"
-    "		const int  tile_BL_X = ((groupId % (HTILES * VTILES)) % HTILES) * TILE_WIDTH;\n"
+    "		const int tile_BL_X = ((groupId % (HTILES * VTILES)) % HTILES) * TILE_WIDTH;\n"
     "\n"
     "		int localRow  = localId / TILE_WIDTH ;\n"
     "		int localCol  = localId % TILE_WIDTH ;\n"
     "\n"
-    "		int upstreamRow = localRow  + tile_BL_Y + gMargin;\n"
-    "		int upstreamCol	= localCol  + tile_BL_X + gMargin;\n"
+    "		int upstreamRow = localRow  + tile_BL_Y ;\n"
+    "		int upstreamCol	= localCol  + tile_BL_X ;\n"
     "\n"
     "		bool bValid =  upstreamRow < gInputSize && upstreamCol < gInputSize && localId < MAX_VALID_ID;\n"
     "\n"
@@ -347,12 +237,18 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "		bool bValid3 =  (upstreamRow + TILE_HEIGHT*2) < gInputSize && upstreamCol < gInputSize && localId < MAX_VALID_ID;\n"
     "		bool bValid4 =  (upstreamRow + TILE_HEIGHT*3) < gInputSize && upstreamCol < gInputSize && localId < MAX_VALID_ID;\n"
     "\n"
+    "		upstreamRow += gMargin;\n"
+    "		upstreamCol	+= gMargin;\n"
+    "\n"
+    "		//  Filter   [  0,0   0,1   0,2]  Pixel  [   0,0    0,-1    0,-2]\n"
+    "		//           [  1,0   1,1   1,2]         [  -1,0   -1,-1   -1,-2]\n"
+    "		//           [  2,0   2,1   2,2]         [  -2,0   -2,-1   -2,-2]\n"
     "\n"
     "\n"
     "		//Step2: loading_offset;\n"
     "    int local_x, local_y;\n"
-    "		bool bImageLoad = false;\n"
-    "		bool bImageLoad2 = false;\n"
+    "		bool bImageLoad = false;   //possible to Load\n"
+    "		bool bImageValidX = false;  //Really have to Load\n"
     "		int image_x, image_y;\n"
     "		if( localId < (ROWS_PER_WORKGROUP * HTILE_LOCAL_SIZE))\n"
     "		{\n"
@@ -360,13 +256,15 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "				local_x	= localId % HTILE_LOCAL_SIZE;\n"
     "			  local_y = localId / HTILE_LOCAL_SIZE;\n"
     "\n"
-    "\n"
-    "			  image_x = local_x + tile_BL_X - (gFilterSize-1) + gMargin;\n"
-    "			  image_y = local_y + tile_BL_Y - (gFilterSize-1) + gMargin;\n"
-    "				if( image_x >= 0 && image_x < gInputSize)\n"
+    "			  //shift left to (gFilterSize-1)\n"
+    "			  image_x = local_x + tile_BL_X - (gFilterSize-1) ;\n"
+    "			  image_y = local_y + tile_BL_Y - (gFilterSize-1) ;\n"
+    "				if( image_x >= 0 && image_x < gOutputSize)\n"
     "				{\n"
-    "						bImageLoad2 = true;\n"
+    "						bImageValidX = true;\n"
     "				}\n"
+    "				image_x +=  gMargin;\n"
+    "				image_y +=  gMargin;\n"
     "		}\n"
     "\n"
     "\n"
@@ -374,43 +272,11 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "		int forceloop = min(gNumFilters, gNumFilters*batchSize);\n"
     "\n"
     "    for (int outPlane = 0; outPlane < forceloop; outPlane++) {\n"
-    "			  //only bImageLoad == true will load images\n"
-    "			  //For exmaple 5x5 filters, 16x16  tile\n"
-    "		    //  1st load 12 Rows   == 256 threads == 256/ (16 + 5 -1 )  = 12:\n"
-    "				//	 					==> 240 threds load iamge ,   last 16 threads do not load\n"
-    "	      //  2nd load 4  rows   == 16- 12 = rows\n"
-    "				//            ==> only 1st 64 threads load images\n"
-    "        //\n"
+    "\n"
     "\n"
     "			   if(bImageLoad)\n"
     "				 {\n"
-    "						//1st Load is a must\n"
-    "					 {\n"
-    "								int localOffset =	local_y * HTILE_LOCAL_SIZE + local_x;\n"
-    "								float value;\n"
-    "								int row = 0;\n"
-    "								bool bProcess = false;\n"
-    "\n"
-    "								row = image_y;\n"
-    "\n"
-    "\n"
-    "\n"
-    "								bProcess = row >= 0 && row < gInputSize && bImageLoad2 ;\n"
-    "\n"
-    "								int offset =  outputImageOffset +\n"
-    "																outPlane * gOutputSize * gOutputSize +\n"
-    "																row * gOutputSize +\n"
-    "																image_x;\n"
-    "\n"
-    "								 value =  gradOutput[offset];\n"
-    "								 if(!bProcess){\n"
-    "										value = 0;\n"
-    "									}\n"
-    "\n"
-    "								__gradOutput[localOffset] = value;\n"
-    "						}\n"
-    "\n"
-    "						for(int i = 1; i < IMAGE_LOAD_ITERATIONS; i++)\n"
+    "						for(int i = 0; i < IMAGE_LOAD_ITERATIONS; i++)\n"
     "						{\n"
     "							int localOffset =	(local_y + i * ROWS_PER_WORKGROUP)  * HTILE_LOCAL_SIZE + local_x;\n"
     "\n"
@@ -423,9 +289,7 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "\n"
     "									row = image_y + i * ROWS_PER_WORKGROUP;\n"
     "\n"
-    "\n"
-    "\n"
-    "									bProcess = row >= 0 && row < gInputSize && bImageLoad2 ;\n"
+    "									bProcess = row >= 0 && row < gOutputSize && bImageValidX ;\n"
     "\n"
     "									int offset =  outputImageOffset +\n"
     "																	outPlane * gOutputSize * gOutputSize +\n"
@@ -449,7 +313,12 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "					//No negative offset mode, it is slow code\n"
     "\n"
     "					//LLVM with Pointers to produce less address\n"
-    "					__global const float *f = &weights[weightPlaneOffset + outPlane * gFilterSize *gFilterSize];\n"
+    "					//int thisWeightIndex = (( outPlane * gInputPlanes\n"
+    "					// 											+ upstreamPlane) * gFilterSize\n"
+    "					//											+ filterRow) * gFilterSize\n"
+    "					//            					+ filterCol;\n"
+    "\n"
+    "					__global const float *f = &weights[weightPlaneOffset + outPlane * gInputPlanes * gFilterSize *gFilterSize];\n"
     "					for(int i=0; i < gFilterSize; i++)\n"
     "					{\n"
     "						for(int j=0; j < gFilterSize; j++)\n"
@@ -522,8 +391,8 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "									int resultIndex = outRow * HTILE_LOCAL_SIZE + outCol;\n"
     "\n"
     "									float thisError = __gradOutput[resultIndex];\n"
-    "									int thisWeightIndex = weightPlaneOffset +\n"
-    "																				outPlane * gFilterSize *gFilterSize\n"
+    "									int thisWeightIndex = outPlane * gInputPlanes* gFilterSize *gFilterSize\n"
+    "																				+ weightPlaneOffset +\n"
     "																				+ i * gFilterSize\n"
     "																				+ j;\n"
     "									float thisWeight = weights[thisWeightIndex];\n"
@@ -542,8 +411,8 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "										int resultIndex = outRow * HTILE_LOCAL_SIZE + outCol;\n"
     "\n"
     "										float thisError = __gradOutput[resultIndex];\n"
-    "									int thisWeightIndex = weightPlaneOffset +\n"
-    "																				outPlane * gFilterSize *gFilterSize\n"
+    "									int thisWeightIndex = outPlane * gInputPlanes* gFilterSize *gFilterSize\n"
+    "																				+ weightPlaneOffset +\n"
     "																				+ i * gFilterSize\n"
     "																				+ j;\n"
     "										float thisWeight = weights[thisWeightIndex];\n"
@@ -562,8 +431,8 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "										int resultIndex = outRow * HTILE_LOCAL_SIZE + outCol;\n"
     "\n"
     "										float thisError = __gradOutput[resultIndex];\n"
-    "									int thisWeightIndex = weightPlaneOffset +\n"
-    "																				outPlane * gFilterSize *gFilterSize\n"
+    "									int thisWeightIndex = outPlane * gInputPlanes* gFilterSize *gFilterSize\n"
+    "																				+ weightPlaneOffset +\n"
     "																				+ i * gFilterSize\n"
     "																				+ j;\n"
     "										float thisWeight = weights[thisWeightIndex];\n"
@@ -582,8 +451,8 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "										int resultIndex = outRow * HTILE_LOCAL_SIZE + outCol;\n"
     "\n"
     "										float thisError = __gradOutput[resultIndex];\n"
-    "										int thisWeightIndex = weightPlaneOffset +\n"
-    "																				outPlane * gFilterSize *gFilterSize\n"
+    "									int thisWeightIndex = outPlane * gInputPlanes* gFilterSize *gFilterSize\n"
+    "																				+ weightPlaneOffset +\n"
     "																				+ i * gFilterSize\n"
     "																				+ j;\n"
     "										float thisWeight = weights[thisWeightIndex];\n"
@@ -618,7 +487,9 @@ BackwardTiled::BackwardTiled(EasyCL *cl, LayerDimensions dim) :
     "    }\n"
     "\n"
     "}\n"
-    "#endif\n"
+    "\n"
+    "\n"
+    "\n"
     "#if 0\n"
     "void kernel calcGradInput(\n"
     "        const int batchSize,\n"
