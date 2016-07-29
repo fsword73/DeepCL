@@ -190,7 +190,7 @@ void kernel convolve_tilemode_float(
 		
 		//Step1: calculuating output
 		int tile_BL_X, tile_BL_Y;	
-		tile_BL_Y = ((groupId % (HTILES * VTILES)) / HTILES) * TILE_WIDTH;
+		tile_BL_Y = ((groupId % (HTILES * VTILES)) / HTILES) * (TILE_HEIGHT* VTILE_REPEAT);
 		tile_BL_X = ((groupId % (HTILES * VTILES)) % HTILES) * TILE_WIDTH;
 
 		//Offset in Local Memory 
@@ -229,6 +229,9 @@ void kernel convolve_tilemode_float(
 			  //load Image Offset 
 			  image_x = local_x + tile_BL_X;
 			  image_y = local_y + tile_BL_Y;
+
+				//reduce operation for inner loop
+			  bValidX = image_x >=0 && image_x < gInputSize; 
 			
 #if gPadZeros == 1
 			  image_x -= gHalfFilterSize;
@@ -236,8 +239,6 @@ void kernel convolve_tilemode_float(
 #endif 			
 
 			
-				//reduce operation for inner loop
-			  bValidX = image_x >=0 && image_x < gInputSize; 
 		}
 		
 
